@@ -20,7 +20,7 @@ func init() {
 	major, minor, patch, err = ParseVersion(Version())
 
 	if err != nil {
-		panic(fmt.Errorf("Could not parse version: '%s'", Version()))
+		panic(fmt.Errorf("could not parse version: '%s'", Version()))
 	}
 }
 
@@ -40,8 +40,7 @@ func ParseVersion(ver string) (uint8, uint8, uint8, error) {
 	parts := strings.Split(ver, ".")
 	if len(parts) != 3 {
 		return 0, 0, 0,
-			fmt.Errorf("Version string must have three '.' separated parts "+
-				"but '%s' does not.", ver)
+			fmt.Errorf("version string must have three '.' separated parts but '%s' does not", ver)
 	}
 	maj, err := strconv.ParseUint(parts[0], numberBase, uintBits)
 	if err != nil {

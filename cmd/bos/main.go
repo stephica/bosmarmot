@@ -4,7 +4,8 @@ import (
 	"fmt"
 	"os"
 
-	"code.monax.io/platform/bosmarmot/cmd"
+	"code.monax.io/platform/bosmarmot/consensus/tendermint"
+	"code.monax.io/platform/bosmarmot/logging/lifecycle"
 	"github.com/jawher/mow.cli"
 )
 
@@ -12,9 +13,9 @@ func main() {
 	bos := cli.App("bos",
 		"Deep in the Burrow")
 	bos.Action = func() {
-		fmt.Println("BOSMARMOT")
+		//logger, _ := lifecycle.NewStdErrLogger()
+		//tendermint.LaunchGenesisValidator(logger)
 	}
-	cmd.AddVersionCommand(bos)
 	bos.Run(os.Args)
 }
 
