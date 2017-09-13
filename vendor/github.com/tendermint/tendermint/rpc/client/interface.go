@@ -31,7 +31,8 @@ import (
 type ABCIClient interface {
 	// reading from abci app
 	ABCIInfo() (*ctypes.ResultABCIInfo, error)
-	ABCIQuery(path string, data data.Bytes, prove bool) (*ctypes.ResultABCIQuery, error)
+	ABCIQuery(path string, data data.Bytes) (*ctypes.ResultABCIQuery, error)
+	ABCIQueryWithOptions(path string, data data.Bytes, opts ABCIQueryOptions) (*ctypes.ResultABCIQuery, error)
 
 	// writing to abci app
 	BroadcastTxCommit(tx types.Tx) (*ctypes.ResultBroadcastTxCommit, error)
@@ -42,9 +43,9 @@ type ABCIClient interface {
 // SignClient groups together the interfaces need to get valid
 // signatures and prove anything about the chain
 type SignClient interface {
-	Block(height int) (*ctypes.ResultBlock, error)
-	Commit(height int) (*ctypes.ResultCommit, error)
-	Validators() (*ctypes.ResultValidators, error)
+	Block(height *int) (*ctypes.ResultBlock, error)
+	Commit(height *int) (*ctypes.ResultCommit, error)
+	Validators(height *int) (*ctypes.ResultValidators, error)
 	Tx(hash []byte, prove bool) (*ctypes.ResultTx, error)
 }
 

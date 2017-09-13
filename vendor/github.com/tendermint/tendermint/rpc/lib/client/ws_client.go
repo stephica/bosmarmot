@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"math"
+	"math/rand"
 	"net"
 	"net/http"
 	"sync"
@@ -40,15 +40,17 @@ type WSClient struct {
 	// https://godoc.org/github.com/rcrowley/go-metrics#Timer.
 	PingPongLatencyTimer metrics.Timer
 
-	// user facing channels, closed only when the client is being stopped.
-	ResultsCh chan json.RawMessage
-	ErrorsCh  chan error
+	// Single user facing channel to read RPCResponses from, closed only when the client is being stopped.
+	ResponsesCh chan types.RPCResponse
+
+	// Callback, which will be called each time after successful reconnect.
+	onReconnect func()
 
 	// internal channels
-	send            chan types.RPCRequest // user requests
-	backlog         chan types.RPCRequest // stores a single user request received during a conn failure
-	reconnectAfter  chan error            // reconnect requests
-	readRoutineQuit chan struct{}         // a way for readRoutine to close writeRoutine
+	send             chan types.RPCRequest // user requests
+	backlog          chan types.RPCRequest // stores a single user request received during a conn failure
+	reconnectAfter   chan error            // reconnect requests
+	readRoutineQuit  chan struct{}         // a way for readRoutine to close writeRoutine
 
 	wg sync.WaitGroup
 
@@ -124,6 +126,14 @@ func PingPeriod(pingPeriod time.Duration) func(*WSClient) {
 	}
 }
 
+// OnReconnect sets the callback, which will be called every time after
+// successful reconnect.
+func OnReconnect(cb func()) func(*WSClient) {
+	return func(c *WSClient) {
+		c.onReconnect = cb
+	}
+}
+
 // String returns WS client full address.
 func (c *WSClient) String() string {
 	return fmt.Sprintf("%s (%s)", c.Address, c.Endpoint)
@@ -137,8 +147,7 @@ func (c *WSClient) OnStart() error {
 		return err
 	}
 
-	c.ResultsCh = make(chan json.RawMessage)
-	c.ErrorsCh = make(chan error)
+	c.ResponsesCh = make(chan types.RPCResponse)
 
 	c.send = make(chan types.RPCRequest)
 	// 1 additional error may come from the read/write
@@ -163,8 +172,7 @@ func (c *WSClient) Stop() bool {
 	success := c.BaseService.Stop()
 	// only close user-facing channels when we can't write to them
 	c.wg.Wait()
-	close(c.ResultsCh)
-	close(c.ErrorsCh)
+	close(c.ResponsesCh)
 	return success
 }
 
@@ -181,7 +189,7 @@ func (c *WSClient) IsActive() bool {
 }
 
 // Send the given RPC request to the server. Results will be available on
-// ResultsCh, errors, if any, on ErrorsCh. Will block until send succeeds or
+// ResponsesCh, errors, if any, on ErrorsCh. Will block until send succeeds or
 // ctx.Done is closed.
 func (c *WSClient) Send(ctx context.Context, request types.RPCRequest) error {
 	select {
@@ -195,7 +203,7 @@ func (c *WSClient) Send(ctx context.Context, request types.RPCRequest) error {
 
 // Call the given method. See Send description.
 func (c *WSClient) Call(ctx context.Context, method string, params map[string]interface{}) error {
-	request, err := types.MapToRequest("", method, params)
+	request, err := types.MapToRequest("ws-client", method, params)
 	if err != nil {
 		return err
 	}
@@ -205,7 +213,7 @@ func (c *WSClient) Call(ctx context.Context, method string, params map[string]in
 // CallWithArrayParams the given method with params in a form of array. See
 // Send description.
 func (c *WSClient) CallWithArrayParams(ctx context.Context, method string, params []interface{}) error {
-	request, err := types.ArrayToRequest("", method, params)
+	request, err := types.ArrayToRequest("ws-client", method, params)
 	if err != nil {
 		return err
 	}
@@ -243,17 +251,23 @@ func (c *WSClient) reconnect() error {
 		c.mtx.Unlock()
 	}()
 
+	// 1s == (1e9 ns) == (1 Billion ns)
+	billionNs := float64(time.Second.Nanoseconds())
 	for {
-		c.Logger.Info("reconnecting", "attempt", attempt+1)
+		jitterSeconds := time.Duration(rand.Float64() * billionNs)
+		backoffDuration := jitterSeconds + ((1 << uint(attempt)) * time.Second)
 
-		d := time.Duration(math.Exp2(float64(attempt)))
-		time.Sleep(d * time.Second)
+		c.Logger.Info("reconnecting", "attempt", attempt+1, "backoff_duration", backoffDuration)
+		time.Sleep(backoffDuration)
 
 		err := c.dial()
 		if err != nil {
 			c.Logger.Error("failed to redial", "err", err)
 		} else {
 			c.Logger.Info("reconnected")
+			if c.onReconnect != nil {
+				go c.onReconnect()
+			}
 			return nil
 		}
 
@@ -419,15 +433,16 @@ func (c *WSClient) readRoutine() {
 		err = json.Unmarshal(data, &response)
 		if err != nil {
 			c.Logger.Error("failed to parse response", "err", err, "data", string(data))
-			c.ErrorsCh <- err
-			continue
-		}
-		if response.Error != "" {
-			c.ErrorsCh <- errors.Errorf(response.Error)
 			continue
 		}
 		c.Logger.Info("got response", "resp", response.Result)
-		c.ResultsCh <- *response.Result
+		// Combine a non-blocking read on BaseService.Quit with a non-blocking write on ResponsesCh to avoid blocking
+		// c.wg.Wait() in c.Stop(). Note we rely on Quit being closed so that it sends unlimited Quit signals to stop
+		// both readRoutine and writeRoutine
+		select {
+		case <-c.Quit:
+		case c.ResponsesCh <- response:
+		}
 	}
 }
 

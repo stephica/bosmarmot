@@ -119,8 +119,8 @@ func TestCheckInvalidLists(t *testing.T) {
 			w, err := codec.BytesToWords(data)
 			if tc.valid {
 				assert.Nil(err, "%d: %+v", i, err)
-				b, err := codec.WordsToBytes(w)
-				assert.Nil(err, "%d: %+v", i, err)
+				b, err1 := codec.WordsToBytes(w)
+				assert.Nil(err1, "%d: %+v", i, err1)
 				assert.Equal(data, b)
 			} else {
 				assert.NotNil(err, "%d", i)
@@ -152,7 +152,7 @@ func TestCheckTypoDetection(t *testing.T) {
 		codec, err := LoadCodec(bank)
 		require.Nil(err, "%s: %+v", bank, err)
 		for i := 0; i < 1000; i++ {
-			numBytes := cmn.RandInt()%60 + 1
+			numBytes := cmn.RandInt()%60 + 4
 			data := cmn.RandBytes(numBytes)
 
 			words, err := codec.BytesToWords(data)

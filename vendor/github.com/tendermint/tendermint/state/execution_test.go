@@ -5,6 +5,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
 	"github.com/tendermint/abci/example/dummy"
 	crypto "github.com/tendermint/go-crypto"
 	"github.com/tendermint/tendermint/proxy"
@@ -55,13 +56,14 @@ func makeTxs(blockNum int) (txs []types.Tx) {
 }
 
 func state() *State {
-	return MakeGenesisState(dbm.NewMemDB(), &types.GenesisDoc{
+	s, _ := MakeGenesisState(dbm.NewMemDB(), &types.GenesisDoc{
 		ChainID: chainID,
 		Validators: []types.GenesisValidator{
 			types.GenesisValidator{privKey.PubKey(), 10000, "test"},
 		},
 		AppHash: nil,
 	})
+	return s
 }
 
 func makeBlock(num int, state *State) *types.Block {

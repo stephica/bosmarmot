@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"hash/crc32"
 	"io"
 	"reflect"
 	"strconv"
@@ -11,7 +12,6 @@ import (
 	"time"
 
 	abci "github.com/tendermint/abci/types"
-	wire "github.com/tendermint/go-wire"
 	auto "github.com/tendermint/tmlibs/autofile"
 	cmn "github.com/tendermint/tmlibs/common"
 	"github.com/tendermint/tmlibs/log"
@@ -19,7 +19,10 @@ import (
 	"github.com/tendermint/tendermint/proxy"
 	sm "github.com/tendermint/tendermint/state"
 	"github.com/tendermint/tendermint/types"
+	"github.com/tendermint/tendermint/version"
 )
+
+var crc32c = crc32.MakeTable(crc32.Castagnoli)
 
 // Functionality to replay blocks and messages on recovery from a crash.
 // There are two general failure scenarios: failure during consensus, and failure while applying the block.
@@ -34,17 +37,10 @@ import (
 // as if it were received in receiveRoutine
 // Lines that start with "#" are ignored.
 // NOTE: receiveRoutine should not be running
-func (cs *ConsensusState) readReplayMessage(msgBytes []byte, newStepCh chan interface{}) error {
-	// Skip over empty and meta lines
-	if len(msgBytes) == 0 || msgBytes[0] == '#' {
+func (cs *ConsensusState) readReplayMessage(msg *TimedWALMessage, newStepCh chan interface{}) error {
+	// skip meta messages
+	if _, ok := msg.Msg.(EndHeightMessage); ok {
 		return nil
-	}
-	var err error
-	var msg TimedWALMessage
-	wire.ReadJSON(&msg, msgBytes, &err)
-	if err != nil {
-		fmt.Println("MsgBytes:", msgBytes, string(msgBytes))
-		return fmt.Errorf("Error reading json data: %v", err)
 	}
 
 	// for logging
@@ -103,7 +99,7 @@ func (cs *ConsensusState) catchupReplay(csHeight int) error {
 	// Ensure that ENDHEIGHT for this height doesn't exist
 	// NOTE: This is just a sanity check. As far as we know things work fine without it,
 	// and Handshake could reuse ConsensusState if it weren't for this check (since we can crash after writing ENDHEIGHT).
-	gr, found, err := cs.wal.group.Search("#ENDHEIGHT: ", makeHeightSearchFunc(csHeight))
+	gr, found, err := cs.wal.SearchForEndHeight(uint64(csHeight))
 	if gr != nil {
 		gr.Close()
 	}
@@ -112,55 +108,33 @@ func (cs *ConsensusState) catchupReplay(csHeight int) error {
 	}
 
 	// Search for last height marker
-	gr, found, err = cs.wal.group.Search("#ENDHEIGHT: ", makeHeightSearchFunc(csHeight-1))
+	gr, found, err = cs.wal.SearchForEndHeight(uint64(csHeight - 1))
 	if err == io.EOF {
 		cs.Logger.Error("Replay: wal.group.Search returned EOF", "#ENDHEIGHT", csHeight-1)
-		// if we upgraded from 0.9 to 0.9.1, we may have #HEIGHT instead
-		// TODO (0.10.0): remove this
-		gr, found, err = cs.wal.group.Search("#HEIGHT: ", makeHeightSearchFunc(csHeight))
-		if err == io.EOF {
-			cs.Logger.Error("Replay: wal.group.Search returned EOF", "#HEIGHT", csHeight)
-			return nil
-		} else if err != nil {
-			return err
-		}
 	} else if err != nil {
 		return err
-	} else {
-		defer gr.Close()
 	}
 	if !found {
-		// if we upgraded from 0.9 to 0.9.1, we may have #HEIGHT instead
-		// TODO (0.10.0): remove this
-		gr, _, err = cs.wal.group.Search("#HEIGHT: ", makeHeightSearchFunc(csHeight))
-		if err == io.EOF {
-			cs.Logger.Error("Replay: wal.group.Search returned EOF", "#HEIGHT", csHeight)
-			return nil
-		} else if err != nil {
-			return err
-		} else {
-			defer gr.Close()
-		}
-
-		// TODO (0.10.0): uncomment
-		// return errors.New(cmn.Fmt("Cannot replay height %d. WAL does not contain #ENDHEIGHT for %d.", csHeight, csHeight-1))
+		return errors.New(cmn.Fmt("Cannot replay height %d. WAL does not contain #ENDHEIGHT for %d.", csHeight, csHeight-1))
 	}
+	defer gr.Close()
 
 	cs.Logger.Info("Catchup by replaying consensus messages", "height", csHeight)
 
+	var msg *TimedWALMessage
+	dec := WALDecoder{gr}
+
 	for {
-		line, err := gr.ReadLine()
-		if err != nil {
-			if err == io.EOF {
-				break
-			} else {
-				return err
-			}
+		msg, err = dec.Decode()
+		if err == io.EOF {
+			break
+		} else if err != nil {
+			return err
 		}
 		// NOTE: since the priv key is set when the msgs are received
 		// it will attempt to eg double sign but we can just ignore it
 		// since the votes will be replayed and we'll get to the next step
-		if err := cs.readReplayMessage([]byte(line), nil); err != nil {
+		if err := cs.readReplayMessage(msg, nil); err != nil {
 			return err
 		}
 	}
@@ -221,7 +195,7 @@ func (h *Handshaker) NBlocks() int {
 // TODO: retry the handshake/replay if it fails ?
 func (h *Handshaker) Handshake(proxyApp proxy.AppConns) error {
 	// handshake is done via info request on the query conn
-	res, err := proxyApp.Query().InfoSync()
+	res, err := proxyApp.Query().InfoSync(abci.RequestInfo{version.Version})
 	if err != nil {
 		return errors.New(cmn.Fmt("Error calling Info: %v", err))
 	}
@@ -257,7 +231,7 @@ func (h *Handshaker) ReplayBlocks(appHash []byte, appBlockHeight int, proxyApp p
 	// If appBlockHeight == 0 it means that we are at genesis and hence should send InitChain
 	if appBlockHeight == 0 {
 		validators := types.TM2PB.Validators(h.state.Validators)
-		proxyApp.Consensus().InitChainSync(validators)
+		proxyApp.Consensus().InitChainSync(abci.RequestInitChain{validators})
 	}
 
 	// First handle edge cases and constraints on the storeBlockHeight
@@ -324,8 +298,11 @@ func (h *Handshaker) ReplayBlocks(appHash []byte, appBlockHeight int, proxyApp p
 func (h *Handshaker) replayBlocks(proxyApp proxy.AppConns, appBlockHeight, storeBlockHeight int, mutateState bool) ([]byte, error) {
 	// App is further behind than it should be, so we need to replay blocks.
 	// We replay all blocks from appBlockHeight+1.
+	//
 	// Note that we don't have an old version of the state,
 	// so we by-pass state validation/mutation using sm.ExecCommitBlock.
+	// This also means we won't be saving validator sets if they change during this period.
+	//
 	// If mutateState == true, the final block is replayed with h.replayBlock()
 
 	var appHash []byte

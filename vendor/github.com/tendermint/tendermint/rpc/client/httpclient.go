@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/pkg/errors"
+
 	data "github.com/tendermint/go-wire/data"
 	ctypes "github.com/tendermint/tendermint/rpc/core/types"
 	rpcclient "github.com/tendermint/tendermint/rpc/lib/client"
@@ -38,17 +39,12 @@ func NewHTTP(remote, wsEndpoint string) *HTTP {
 	}
 }
 
-func (c *HTTP) _assertIsClient() Client {
-	return c
-}
-
-func (c *HTTP) _assertIsNetworkClient() NetworkClient {
-	return c
-}
-
-func (c *HTTP) _assertIsEventSwitch() types.EventSwitch {
-	return c
-}
+var (
+	_ Client            = (*HTTP)(nil)
+	_ NetworkClient     = (*HTTP)(nil)
+	_ types.EventSwitch = (*HTTP)(nil)
+	_ types.EventSwitch = (*WSEvents)(nil)
+)
 
 func (c *HTTP) Status() (*ctypes.ResultStatus, error) {
 	result := new(ctypes.ResultStatus)
@@ -68,10 +64,14 @@ func (c *HTTP) ABCIInfo() (*ctypes.ResultABCIInfo, error) {
 	return result, nil
 }
 
-func (c *HTTP) ABCIQuery(path string, data data.Bytes, prove bool) (*ctypes.ResultABCIQuery, error) {
+func (c *HTTP) ABCIQuery(path string, data data.Bytes) (*ctypes.ResultABCIQuery, error) {
+	return c.ABCIQueryWithOptions(path, data, DefaultABCIQueryOptions)
+}
+
+func (c *HTTP) ABCIQueryWithOptions(path string, data data.Bytes, opts ABCIQueryOptions) (*ctypes.ResultABCIQuery, error) {
 	result := new(ctypes.ResultABCIQuery)
 	_, err := c.rpc.Call("abci_query",
-		map[string]interface{}{"path": path, "data": data, "prove": prove},
+		map[string]interface{}{"path": path, "data": data, "height": opts.Height, "trusted": opts.Trusted},
 		result)
 	if err != nil {
 		return nil, errors.Wrap(err, "ABCIQuery")
@@ -143,7 +143,7 @@ func (c *HTTP) Genesis() (*ctypes.ResultGenesis, error) {
 	return result, nil
 }
 
-func (c *HTTP) Block(height int) (*ctypes.ResultBlock, error) {
+func (c *HTTP) Block(height *int) (*ctypes.ResultBlock, error) {
 	result := new(ctypes.ResultBlock)
 	_, err := c.rpc.Call("block", map[string]interface{}{"height": height}, result)
 	if err != nil {
@@ -152,7 +152,7 @@ func (c *HTTP) Block(height int) (*ctypes.ResultBlock, error) {
 	return result, nil
 }
 
-func (c *HTTP) Commit(height int) (*ctypes.ResultCommit, error) {
+func (c *HTTP) Commit(height *int) (*ctypes.ResultCommit, error) {
 	result := new(ctypes.ResultCommit)
 	_, err := c.rpc.Call("commit", map[string]interface{}{"height": height}, result)
 	if err != nil {
@@ -174,9 +174,9 @@ func (c *HTTP) Tx(hash []byte, prove bool) (*ctypes.ResultTx, error) {
 	return result, nil
 }
 
-func (c *HTTP) Validators() (*ctypes.ResultValidators, error) {
+func (c *HTTP) Validators(height *int) (*ctypes.ResultValidators, error) {
 	result := new(ctypes.ResultValidators)
-	_, err := c.rpc.Call("validators", map[string]interface{}{}, result)
+	_, err := c.rpc.Call("validators", map[string]interface{}{"height": height}, result)
 	if err != nil {
 		return nil, errors.Wrap(err, "Validators")
 	}
@@ -215,10 +215,6 @@ func newWSEvents(remote, endpoint string) *WSEvents {
 	}
 }
 
-func (w *WSEvents) _assertIsEventSwitch() types.EventSwitch {
-	return w
-}
-
 // Start is the only way I could think the extend OnStart from
 // events.eventSwitch.  If only it wasn't private...
 // BaseService.Start -> eventSwitch.OnStart -> WSEvents.Start
@@ -226,7 +222,9 @@ func (w *WSEvents) Start() (bool, error) {
 	st, err := w.EventSwitch.Start()
 	// if we did start, then OnStart here...
 	if st && err == nil {
-		ws := rpcclient.NewWSClient(w.remote, w.endpoint)
+		ws := rpcclient.NewWSClient(w.remote, w.endpoint, rpcclient.OnReconnect(func() {
+			w.redoSubscriptions()
+		}))
 		_, err = ws.Start()
 		if err == nil {
 			w.ws = ws
@@ -305,6 +303,14 @@ func (w *WSEvents) RemoveListener(listenerID string) {
 	w.EventSwitch.RemoveListener(listenerID)
 }
 
+// After being reconnected, it is necessary to redo subscription
+// to server otherwise no data will be automatically received
+func (w *WSEvents) redoSubscriptions() {
+	for event, _ := range w.evtCount {
+		w.subscribe(event)
+	}
+}
+
 // eventListener is an infinite loop pulling all websocket events
 // and pushing them to the EventSwitch.
 //
@@ -312,16 +318,18 @@ func (w *WSEvents) RemoveListener(listenerID string) {
 func (w *WSEvents) eventListener() {
 	for {
 		select {
-		case res := <-w.ws.ResultsCh:
+		case resp := <-w.ws.ResponsesCh:
 			// res is json.RawMessage
-			err := w.parseEvent(res)
+			if resp.Error != nil {
+				// FIXME: better logging/handling of errors??
+				fmt.Printf("ws err: %+v\n", resp.Error.Error())
+				continue
+			}
+			err := w.parseEvent(*resp.Result)
 			if err != nil {
 				// FIXME: better logging/handling of errors??
 				fmt.Printf("ws result: %+v\n", err)
 			}
-		case err := <-w.ws.ErrorsCh:
-			// FIXME: better logging/handling of errors??
-			fmt.Printf("ws err: %+v\n", err)
 		case <-w.quit:
 			// send a message so we can wait for the routine to exit
 			// before cleaning up the w.ws stuff

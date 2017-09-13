@@ -5,9 +5,11 @@ import (
 	"testing"
 	"time"
 
+	crypto "github.com/tendermint/go-crypto"
+	data "github.com/tendermint/go-wire/data"
 	"github.com/tendermint/tendermint/p2p"
 	"github.com/tendermint/tendermint/types"
-	. "github.com/tendermint/tmlibs/common"
+	cmn "github.com/tendermint/tmlibs/common"
 	"github.com/tendermint/tmlibs/events"
 )
 
@@ -53,7 +55,7 @@ func TestByzantine(t *testing.T) {
 	eventLogger := logger.With("module", "events")
 	for i := 0; i < N; i++ {
 		if i == 0 {
-			css[i].privValidator = NewByzantinePrivValidator(css[i].privValidator.(*types.PrivValidator))
+			css[i].privValidator = NewByzantinePrivValidator(css[i].privValidator)
 			// make byzantine
 			css[i].decideProposal = func(j int) func(int, int) {
 				return func(height, round int) {
@@ -99,10 +101,10 @@ func TestByzantine(t *testing.T) {
 	// start the state machines
 	byzR := reactors[0].(*ByzantineReactor)
 	s := byzR.reactor.conS.GetState()
-	byzR.reactor.SwitchToConsensus(s)
+	byzR.reactor.SwitchToConsensus(s, 0)
 	for i := 1; i < N; i++ {
 		cr := reactors[i].(*ConsensusReactor)
-		cr.SwitchToConsensus(cr.conS.GetState())
+		cr.SwitchToConsensus(cr.conS.GetState(), 0)
 	}
 
 	// byz proposer sends one block to peers[0]
@@ -147,8 +149,8 @@ func TestByzantine(t *testing.T) {
 	case <-done:
 	case <-tick.C:
 		for i, reactor := range reactors {
-			t.Log(Fmt("Consensus Reactor %v", i))
-			t.Log(Fmt("%v", reactor))
+			t.Log(cmn.Fmt("Consensus Reactor %v", i))
+			t.Log(cmn.Fmt("%v", reactor))
 		}
 		t.Fatalf("Timed out waiting for all validators to commit first block")
 	}
@@ -188,7 +190,7 @@ func byzantineDecideProposalFunc(t *testing.T, height, round int, cs *ConsensusS
 	}
 }
 
-func sendProposalAndParts(height, round int, cs *ConsensusState, peer *p2p.Peer, proposal *types.Proposal, blockHash []byte, parts *types.PartSet) {
+func sendProposalAndParts(height, round int, cs *ConsensusState, peer p2p.Peer, proposal *types.Proposal, blockHash []byte, parts *types.PartSet) {
 	// proposal
 	msg := &ProposalMessage{Proposal: proposal}
 	peer.Send(DataChannel, struct{ ConsensusMessage }{msg})
@@ -218,7 +220,7 @@ func sendProposalAndParts(height, round int, cs *ConsensusState, peer *p2p.Peer,
 // byzantine consensus reactor
 
 type ByzantineReactor struct {
-	Service
+	cmn.Service
 	reactor *ConsensusReactor
 }
 
@@ -231,14 +233,14 @@ func NewByzantineReactor(conR *ConsensusReactor) *ByzantineReactor {
 
 func (br *ByzantineReactor) SetSwitch(s *p2p.Switch)               { br.reactor.SetSwitch(s) }
 func (br *ByzantineReactor) GetChannels() []*p2p.ChannelDescriptor { return br.reactor.GetChannels() }
-func (br *ByzantineReactor) AddPeer(peer *p2p.Peer) {
+func (br *ByzantineReactor) AddPeer(peer p2p.Peer) {
 	if !br.reactor.IsRunning() {
 		return
 	}
 
 	// Create peerState for peer
-	peerState := NewPeerState(peer)
-	peer.Data.Set(types.PeerStateKey, peerState)
+	peerState := NewPeerState(peer).SetLogger(br.reactor.Logger)
+	peer.Set(types.PeerStateKey, peerState)
 
 	// Send our state to peer.
 	// If we're fast_syncing, broadcast a RoundStepMessage later upon SwitchToConsensus().
@@ -246,10 +248,10 @@ func (br *ByzantineReactor) AddPeer(peer *p2p.Peer) {
 		br.reactor.sendNewRoundStepMessages(peer)
 	}
 }
-func (br *ByzantineReactor) RemovePeer(peer *p2p.Peer, reason interface{}) {
+func (br *ByzantineReactor) RemovePeer(peer p2p.Peer, reason interface{}) {
 	br.reactor.RemovePeer(peer, reason)
 }
-func (br *ByzantineReactor) Receive(chID byte, peer *p2p.Peer, msgBytes []byte) {
+func (br *ByzantineReactor) Receive(chID byte, peer p2p.Peer, msgBytes []byte) {
 	br.reactor.Receive(chID, peer, msgBytes)
 }
 
@@ -257,51 +259,42 @@ func (br *ByzantineReactor) Receive(chID byte, peer *p2p.Peer, msgBytes []byte) 
 // byzantine privValidator
 
 type ByzantinePrivValidator struct {
-	Address      []byte `json:"address"`
-	types.Signer `json:"-"`
+	types.Signer
 
-	mtx sync.Mutex
+	pv types.PrivValidator
 }
 
 // Return a priv validator that will sign anything
-func NewByzantinePrivValidator(pv *types.PrivValidator) *ByzantinePrivValidator {
+func NewByzantinePrivValidator(pv types.PrivValidator) *ByzantinePrivValidator {
 	return &ByzantinePrivValidator{
-		Address: pv.Address,
-		Signer:  pv.Signer,
+		Signer: pv.(*types.PrivValidatorFS).Signer,
+		pv:     pv,
 	}
 }
 
-func (privVal *ByzantinePrivValidator) GetAddress() []byte {
-	return privVal.Address
+func (privVal *ByzantinePrivValidator) GetAddress() data.Bytes {
+	return privVal.pv.GetAddress()
 }
 
-func (privVal *ByzantinePrivValidator) SignVote(chainID string, vote *types.Vote) error {
-	privVal.mtx.Lock()
-	defer privVal.mtx.Unlock()
+func (privVal *ByzantinePrivValidator) GetPubKey() crypto.PubKey {
+	return privVal.pv.GetPubKey()
+}
 
-	// Sign
-	vote.Signature = privVal.Sign(types.SignBytes(chainID, vote))
+func (privVal *ByzantinePrivValidator) SignVote(chainID string, vote *types.Vote) (err error) {
+	vote.Signature, err = privVal.Sign(types.SignBytes(chainID, vote))
+	return err
+}
+
+func (privVal *ByzantinePrivValidator) SignProposal(chainID string, proposal *types.Proposal) (err error) {
+	proposal.Signature, err = privVal.Sign(types.SignBytes(chainID, proposal))
 	return nil
 }
 
-func (privVal *ByzantinePrivValidator) SignProposal(chainID string, proposal *types.Proposal) error {
-	privVal.mtx.Lock()
-	defer privVal.mtx.Unlock()
-
-	// Sign
-	proposal.Signature = privVal.Sign(types.SignBytes(chainID, proposal))
-	return nil
-}
-
-func (privVal *ByzantinePrivValidator) SignHeartbeat(chainID string, heartbeat *types.Heartbeat) error {
-	privVal.mtx.Lock()
-	defer privVal.mtx.Unlock()
-
-	// Sign
-	heartbeat.Signature = privVal.Sign(types.SignBytes(chainID, heartbeat))
+func (privVal *ByzantinePrivValidator) SignHeartbeat(chainID string, heartbeat *types.Heartbeat) (err error) {
+	heartbeat.Signature, err = privVal.Sign(types.SignBytes(chainID, heartbeat))
 	return nil
 }
 
 func (privVal *ByzantinePrivValidator) String() string {
-	return Fmt("PrivValidator{%X}", privVal.Address)
+	return cmn.Fmt("PrivValidator{%X}", privVal.GetAddress())
 }

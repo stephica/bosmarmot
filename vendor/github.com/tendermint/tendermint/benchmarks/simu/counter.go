@@ -3,9 +3,8 @@ package main
 import (
 	"context"
 	"encoding/binary"
-	"time"
-	//"encoding/hex"
 	"fmt"
+	"time"
 
 	rpcclient "github.com/tendermint/tendermint/rpc/lib/client"
 	cmn "github.com/tendermint/tmlibs/common"
@@ -22,7 +21,7 @@ func main() {
 	// Read a bunch of responses
 	go func() {
 		for {
-			_, ok := <-wsc.ResultsCh
+			_, ok := <-wsc.ResponsesCh
 			if !ok {
 				break
 			}

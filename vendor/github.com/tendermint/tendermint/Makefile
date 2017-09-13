@@ -1,7 +1,7 @@
 GOTOOLS = \
 					github.com/mitchellh/gox \
+					github.com/tcnksm/ghr \
 					github.com/Masterminds/glide \
-					honnef.co/go/tools/cmd/megacheck
 
 PACKAGES=$(shell go list ./... | grep -v '/vendor/')
 BUILD_TAGS?=tendermint
@@ -34,6 +34,9 @@ test_race:
 
 test_integrations:
 	@bash ./test/test.sh
+
+release:
+	@go test -tags release $(PACKAGES)
 
 test100:
 	@for i in {1..100}; do make test; done

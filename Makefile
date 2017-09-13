@@ -8,8 +8,8 @@
 #
 
 SHELL := /bin/bash
-GOFILES_NOVENDOR := $(shell find . -type f -name '*.go' -not -path "./vendor/*")
-GOPACKAGES_NOVENDOR := $(shell go list ./... | grep -v /vendor/)
+GOFILES_NOVENDOR := $(shell find . -type f -name '*.go' -not -path "**/vendor/*")
+GOPACKAGES_NOVENDOR := $(shell go list ./...)
 OS_ARCHS := "linux/arm linux/386 linux/amd64 darwin/386 darwin/amd64 windows/386 windows/amd64"
 
 # Install dependencies and also clear out vendor (we should do this in CI)
@@ -37,7 +37,7 @@ fix:
 test: check
 	@go test ${GOPACKAGES_NOVENDOR}
 
-# Run tests for developing (noisy)
+# Run tests for development (noisy)
 .PHONY:	test_dev
 test_dev:
 	@go test -v ${GOPACKAGES_NOVENDOR}
@@ -50,7 +50,8 @@ test_integration: check
 
 .PHONY: build_bin
 build_bin:
-	@go build -o bin/bos ./cmd/bos
+	@go build -o bin/bos ./monax/cmd/bos
+	@go build -o bin/monax-keys ./keys/cmd/monax-keys
 
 # Build all the things
 .PHONY: build

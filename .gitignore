@@ -1,5 +1,10 @@
 # Created by .ignore support plugin (hsz.mobi)
 .idea
 priv_validator.json
-data
 scratch/
+bin/
+
+# tests
+scratch/
+*.log
+.burrow

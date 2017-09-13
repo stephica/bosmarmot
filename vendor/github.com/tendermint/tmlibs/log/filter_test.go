@@ -2,7 +2,6 @@ package log_test
 
 import (
 	"bytes"
-	"errors"
 	"strings"
 	"testing"
 
@@ -71,28 +70,10 @@ func TestVariousLevels(t *testing.T) {
 	}
 }
 
-func TestErrNotAllowed(t *testing.T) {
-	myError := errors.New("squelched!")
-	opts := []log.Option{
-		log.AllowError(),
-		log.ErrNotAllowed(myError),
-	}
-	logger := log.NewFilter(log.NewNopLogger(), opts...)
-
-	if want, have := myError, logger.Info("foo", "bar", "baz"); want != have {
-		t.Errorf("want %#+v, have %#+v", want, have)
-	}
-
-	if want, have := error(nil), logger.Error("foo", "bar", "baz"); want != have {
-		t.Errorf("want %#+v, have %#+v", want, have)
-	}
-}
-
 func TestLevelContext(t *testing.T) {
 	var buf bytes.Buffer
 
-	var logger log.Logger
-	logger = log.NewTMJSONLogger(&buf)
+	logger := log.NewTMJSONLogger(&buf)
 	logger = log.NewFilter(logger, log.AllowError())
 	logger = logger.With("context", "value")
 
@@ -111,8 +92,7 @@ func TestLevelContext(t *testing.T) {
 func TestVariousAllowWith(t *testing.T) {
 	var buf bytes.Buffer
 
-	var logger log.Logger
-	logger = log.NewTMJSONLogger(&buf)
+	logger := log.NewTMJSONLogger(&buf)
 
 	logger1 := log.NewFilter(logger, log.AllowError(), log.AllowInfoWith("context", "value"))
 	logger1.With("context", "value").Info("foo", "bar", "baz")

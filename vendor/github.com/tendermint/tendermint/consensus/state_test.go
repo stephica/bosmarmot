@@ -6,8 +6,9 @@ import (
 	"testing"
 	"time"
 
+	cstypes "github.com/tendermint/tendermint/consensus/types"
 	"github.com/tendermint/tendermint/types"
-	. "github.com/tendermint/tmlibs/common"
+	cmn "github.com/tendermint/tmlibs/common"
 )
 
 func init() {
@@ -79,8 +80,8 @@ func TestProposerSelection0(t *testing.T) {
 	<-newRoundCh
 
 	prop = cs1.GetRoundState().Validators.GetProposer()
-	if !bytes.Equal(prop.Address, vss[1].Address) {
-		panic(Fmt("expected proposer to be validator %d. Got %X", 1, prop.Address))
+	if !bytes.Equal(prop.Address, vss[1].GetAddress()) {
+		panic(cmn.Fmt("expected proposer to be validator %d. Got %X", 1, prop.Address))
 	}
 }
 
@@ -100,8 +101,8 @@ func TestProposerSelection2(t *testing.T) {
 	// everyone just votes nil. we get a new proposer each round
 	for i := 0; i < len(vss); i++ {
 		prop := cs1.GetRoundState().Validators.GetProposer()
-		if !bytes.Equal(prop.Address, vss[(i+2)%len(vss)].Address) {
-			panic(Fmt("expected proposer to be validator %d. Got %X", (i+2)%len(vss), prop.Address))
+		if !bytes.Equal(prop.Address, vss[(i+2)%len(vss)].GetAddress()) {
+			panic(cmn.Fmt("expected proposer to be validator %d. Got %X", (i+2)%len(vss), prop.Address))
 		}
 
 		rs := cs1.GetRoundState()
@@ -180,7 +181,7 @@ func TestBadProposal(t *testing.T) {
 	height, round := cs1.Height, cs1.Round
 	vs2 := vss[1]
 
-	partSize := config.Consensus.BlockPartSize
+	partSize := cs1.state.Params.BlockPartSizeBytes
 
 	proposalCh := subscribeToEvent(cs1.evsw, "tester", types.EventStringCompleteProposal(), 1)
 	voteCh := subscribeToEvent(cs1.evsw, "tester", types.EventStringVote(), 1)
@@ -247,7 +248,7 @@ func TestFullRound1(t *testing.T) {
 
 	// grab proposal
 	re := <-propCh
-	propBlockHash := re.(types.TMEventData).Unwrap().(types.EventDataRoundState).RoundState.(*RoundState).ProposalBlock.Hash()
+	propBlockHash := re.(types.TMEventData).Unwrap().(types.EventDataRoundState).RoundState.(*cstypes.RoundState).ProposalBlock.Hash()
 
 	<-voteCh // wait for prevote
 	// NOTE: voteChan cap of 0 ensures we can complete this
@@ -327,7 +328,7 @@ func TestLockNoPOL(t *testing.T) {
 	vs2 := vss[1]
 	height := cs1.Height
 
-	partSize := config.Consensus.BlockPartSize
+	partSize := cs1.state.Params.BlockPartSizeBytes
 
 	timeoutProposeCh := subscribeToEvent(cs1.evsw, "tester", types.EventStringTimeoutPropose(), 1)
 	timeoutWaitCh := subscribeToEvent(cs1.evsw, "tester", types.EventStringTimeoutWait(), 1)
@@ -344,7 +345,7 @@ func TestLockNoPOL(t *testing.T) {
 	cs1.startRoutines(0)
 
 	re := <-proposalCh
-	rs := re.(types.TMEventData).Unwrap().(types.EventDataRoundState).RoundState.(*RoundState)
+	rs := re.(types.TMEventData).Unwrap().(types.EventDataRoundState).RoundState.(*cstypes.RoundState)
 	theBlockHash := rs.ProposalBlock.Hash()
 
 	<-voteCh // prevote
@@ -384,7 +385,7 @@ func TestLockNoPOL(t *testing.T) {
 
 	// now we're on a new round and not the proposer, so wait for timeout
 	re = <-timeoutProposeCh
-	rs = re.(types.TMEventData).Unwrap().(types.EventDataRoundState).RoundState.(*RoundState)
+	rs = re.(types.TMEventData).Unwrap().(types.EventDataRoundState).RoundState.(*cstypes.RoundState)
 
 	if rs.ProposalBlock != nil {
 		panic("Expected proposal block to be nil")
@@ -428,11 +429,11 @@ func TestLockNoPOL(t *testing.T) {
 	incrementRound(vs2)
 
 	re = <-proposalCh
-	rs = re.(types.TMEventData).Unwrap().(types.EventDataRoundState).RoundState.(*RoundState)
+	rs = re.(types.TMEventData).Unwrap().(types.EventDataRoundState).RoundState.(*cstypes.RoundState)
 
 	// now we're on a new round and are the proposer
 	if !bytes.Equal(rs.ProposalBlock.Hash(), rs.LockedBlock.Hash()) {
-		panic(Fmt("Expected proposal block to be locked block. Got %v, Expected %v", rs.ProposalBlock, rs.LockedBlock))
+		panic(cmn.Fmt("Expected proposal block to be locked block. Got %v, Expected %v", rs.ProposalBlock, rs.LockedBlock))
 	}
 
 	<-voteCh // prevote
@@ -493,7 +494,7 @@ func TestLockPOLRelock(t *testing.T) {
 	cs1, vss := randConsensusState(4)
 	vs2, vs3, vs4 := vss[1], vss[2], vss[3]
 
-	partSize := config.Consensus.BlockPartSize
+	partSize := cs1.state.Params.BlockPartSizeBytes
 
 	timeoutProposeCh := subscribeToEvent(cs1.evsw, "tester", types.EventStringTimeoutPropose(), 1)
 	timeoutWaitCh := subscribeToEvent(cs1.evsw, "tester", types.EventStringTimeoutWait(), 1)
@@ -501,8 +502,6 @@ func TestLockPOLRelock(t *testing.T) {
 	voteCh := subscribeToEvent(cs1.evsw, "tester", types.EventStringVote(), 1)
 	newRoundCh := subscribeToEvent(cs1.evsw, "tester", types.EventStringNewRound(), 1)
 	newBlockCh := subscribeToEvent(cs1.evsw, "tester", types.EventStringNewBlockHeader(), 1)
-
-	t.Logf("vs2 last round %v", vs2.PrivValidator.LastRound)
 
 	// everything done from perspective of cs1
 
@@ -517,7 +516,7 @@ func TestLockPOLRelock(t *testing.T) {
 
 	<-newRoundCh
 	re := <-proposalCh
-	rs := re.(types.TMEventData).Unwrap().(types.EventDataRoundState).RoundState.(*RoundState)
+	rs := re.(types.TMEventData).Unwrap().(types.EventDataRoundState).RoundState.(*cstypes.RoundState)
 	theBlockHash := rs.ProposalBlock.Hash()
 
 	<-voteCh // prevote
@@ -593,7 +592,7 @@ func TestLockPOLRelock(t *testing.T) {
 	be := <-newBlockCh
 	b := be.(types.TMEventData).Unwrap().(types.EventDataNewBlockHeader)
 	re = <-newRoundCh
-	rs = re.(types.TMEventData).Unwrap().(types.EventDataRoundState).RoundState.(*RoundState)
+	rs = re.(types.TMEventData).Unwrap().(types.EventDataRoundState).RoundState.(*cstypes.RoundState)
 	if rs.Height != 2 {
 		panic("Expected height to increment")
 	}
@@ -608,7 +607,7 @@ func TestLockPOLUnlock(t *testing.T) {
 	cs1, vss := randConsensusState(4)
 	vs2, vs3, vs4 := vss[1], vss[2], vss[3]
 
-	partSize := config.Consensus.BlockPartSize
+	partSize := cs1.state.Params.BlockPartSizeBytes
 
 	proposalCh := subscribeToEvent(cs1.evsw, "tester", types.EventStringCompleteProposal(), 1)
 	timeoutProposeCh := subscribeToEvent(cs1.evsw, "tester", types.EventStringTimeoutPropose(), 1)
@@ -629,7 +628,7 @@ func TestLockPOLUnlock(t *testing.T) {
 	startTestRound(cs1, cs1.Height, 0)
 	<-newRoundCh
 	re := <-proposalCh
-	rs := re.(types.TMEventData).Unwrap().(types.EventDataRoundState).RoundState.(*RoundState)
+	rs := re.(types.TMEventData).Unwrap().(types.EventDataRoundState).RoundState.(*cstypes.RoundState)
 	theBlockHash := rs.ProposalBlock.Hash()
 
 	<-voteCh // prevote
@@ -655,7 +654,7 @@ func TestLockPOLUnlock(t *testing.T) {
 
 	// timeout to new round
 	re = <-timeoutWaitCh
-	rs = re.(types.TMEventData).Unwrap().(types.EventDataRoundState).RoundState.(*RoundState)
+	rs = re.(types.TMEventData).Unwrap().(types.EventDataRoundState).RoundState.(*cstypes.RoundState)
 	lockedBlockHash := rs.LockedBlock.Hash()
 
 	//XXX: this isnt guaranteed to get there before the timeoutPropose ...
@@ -703,7 +702,7 @@ func TestLockPOLSafety1(t *testing.T) {
 	cs1, vss := randConsensusState(4)
 	vs2, vs3, vs4 := vss[1], vss[2], vss[3]
 
-	partSize := config.Consensus.BlockPartSize
+	partSize := cs1.state.Params.BlockPartSizeBytes
 
 	proposalCh := subscribeToEvent(cs1.evsw, "tester", types.EventStringCompleteProposal(), 1)
 	timeoutProposeCh := subscribeToEvent(cs1.evsw, "tester", types.EventStringTimeoutPropose(), 1)
@@ -715,7 +714,7 @@ func TestLockPOLSafety1(t *testing.T) {
 	startTestRound(cs1, cs1.Height, 0)
 	<-newRoundCh
 	re := <-proposalCh
-	rs := re.(types.TMEventData).Unwrap().(types.EventDataRoundState).RoundState.(*RoundState)
+	rs := re.(types.TMEventData).Unwrap().(types.EventDataRoundState).RoundState.(*cstypes.RoundState)
 	propBlock := rs.ProposalBlock
 
 	<-voteCh // prevote
@@ -763,7 +762,7 @@ func TestLockPOLSafety1(t *testing.T) {
 		re = <-proposalCh
 	}
 
-	rs = re.(types.TMEventData).Unwrap().(types.EventDataRoundState).RoundState.(*RoundState)
+	rs = re.(types.TMEventData).Unwrap().(types.EventDataRoundState).RoundState.(*cstypes.RoundState)
 
 	if rs.LockedBlock != nil {
 		panic("we should not be locked!")
@@ -824,7 +823,7 @@ func TestLockPOLSafety2(t *testing.T) {
 	cs1, vss := randConsensusState(4)
 	vs2, vs3, vs4 := vss[1], vss[2], vss[3]
 
-	partSize := config.Consensus.BlockPartSize
+	partSize := cs1.state.Params.BlockPartSizeBytes
 
 	proposalCh := subscribeToEvent(cs1.evsw, "tester", types.EventStringCompleteProposal(), 1)
 	timeoutProposeCh := subscribeToEvent(cs1.evsw, "tester", types.EventStringTimeoutPropose(), 1)
@@ -850,7 +849,7 @@ func TestLockPOLSafety2(t *testing.T) {
 
 	incrementRound(vs2, vs3, vs4)
 
-	cs1.updateRoundStep(0, RoundStepPrecommitWait)
+	cs1.updateRoundStep(0, cstypes.RoundStepPrecommitWait)
 
 	t.Log("### ONTO Round 1")
 	// jump in at round 1
@@ -931,7 +930,7 @@ func TestSlashingPrevotes(t *testing.T) {
 	re := <-proposalCh
 	<-voteCh // prevote
 
-	rs := re.(types.EventDataRoundState).RoundState.(*RoundState)
+	rs := re.(types.EventDataRoundState).RoundState.(*cstypes.RoundState)
 
 	// we should now be stuck in limbo forever, waiting for more prevotes
 	// add one for a different block should cause us to go into prevote wait
@@ -999,7 +998,7 @@ func TestHalt1(t *testing.T) {
 	cs1, vss := randConsensusState(4)
 	vs2, vs3, vs4 := vss[1], vss[2], vss[3]
 
-	partSize := config.Consensus.BlockPartSize
+	partSize := cs1.state.Params.BlockPartSizeBytes
 
 	proposalCh := subscribeToEvent(cs1.evsw, "tester", types.EventStringCompleteProposal(), 1)
 	timeoutWaitCh := subscribeToEvent(cs1.evsw, "tester", types.EventStringTimeoutWait(), 1)
@@ -1011,7 +1010,7 @@ func TestHalt1(t *testing.T) {
 	startTestRound(cs1, cs1.Height, 0)
 	<-newRoundCh
 	re := <-proposalCh
-	rs := re.(types.TMEventData).Unwrap().(types.EventDataRoundState).RoundState.(*RoundState)
+	rs := re.(types.TMEventData).Unwrap().(types.EventDataRoundState).RoundState.(*cstypes.RoundState)
 	propBlock := rs.ProposalBlock
 	propBlockParts := propBlock.MakePartSet(partSize)
 
@@ -1034,7 +1033,7 @@ func TestHalt1(t *testing.T) {
 	// timeout to new round
 	<-timeoutWaitCh
 	re = <-newRoundCh
-	rs = re.(types.TMEventData).Unwrap().(types.EventDataRoundState).RoundState.(*RoundState)
+	rs = re.(types.TMEventData).Unwrap().(types.EventDataRoundState).RoundState.(*cstypes.RoundState)
 
 	t.Log("### ONTO ROUND 1")
 	/*Round2
@@ -1052,7 +1051,7 @@ func TestHalt1(t *testing.T) {
 	// receiving that precommit should take us straight to commit
 	<-newBlockCh
 	re = <-newRoundCh
-	rs = re.(types.TMEventData).Unwrap().(types.EventDataRoundState).RoundState.(*RoundState)
+	rs = re.(types.TMEventData).Unwrap().(types.EventDataRoundState).RoundState.(*cstypes.RoundState)
 
 	if rs.Height != 2 {
 		panic("expected height to increment")

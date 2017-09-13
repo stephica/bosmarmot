@@ -16,6 +16,7 @@ import (
 	"github.com/go-kit/kit/log/term"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
 	"github.com/tendermint/go-wire/data"
 	client "github.com/tendermint/tendermint/rpc/lib/client"
 	server "github.com/tendermint/tendermint/rpc/lib/server"
@@ -216,15 +217,17 @@ func echoViaWS(cl *client.WSClient, val string) (string, error) {
 	}
 
 	select {
-	case msg := <-cl.ResultsCh:
+	case msg := <-cl.ResponsesCh:
+		if msg.Error != nil {
+			return "", err
+
+		}
 		result := new(ResultEcho)
-		err = json.Unmarshal(msg, result)
+		err = json.Unmarshal(*msg.Result, result)
 		if err != nil {
 			return "", nil
 		}
 		return result.Value, nil
-	case err := <-cl.ErrorsCh:
-		return "", err
 	}
 }
 
@@ -238,15 +241,17 @@ func echoBytesViaWS(cl *client.WSClient, bytes []byte) ([]byte, error) {
 	}
 
 	select {
-	case msg := <-cl.ResultsCh:
+	case msg := <-cl.ResponsesCh:
+		if msg.Error != nil {
+			return []byte{}, msg.Error
+
+		}
 		result := new(ResultEchoBytes)
-		err = json.Unmarshal(msg, result)
+		err = json.Unmarshal(*msg.Result, result)
 		if err != nil {
 			return []byte{}, nil
 		}
 		return result.Value, nil
-	case err := <-cl.ErrorsCh:
-		return []byte{}, err
 	}
 }
 
@@ -318,14 +323,15 @@ func TestWSNewWSRPCFunc(t *testing.T) {
 	require.Nil(t, err)
 
 	select {
-	case msg := <-cl.ResultsCh:
+	case msg := <-cl.ResponsesCh:
+		if msg.Error != nil {
+			t.Fatal(err)
+		}
 		result := new(ResultEcho)
-		err = json.Unmarshal(msg, result)
+		err = json.Unmarshal(*msg.Result, result)
 		require.Nil(t, err)
 		got := result.Value
 		assert.Equal(t, got, val)
-	case err := <-cl.ErrorsCh:
-		t.Fatal(err)
 	}
 }
 
@@ -342,14 +348,15 @@ func TestWSHandlesArrayParams(t *testing.T) {
 	require.Nil(t, err)
 
 	select {
-	case msg := <-cl.ResultsCh:
+	case msg := <-cl.ResponsesCh:
+		if msg.Error != nil {
+			t.Fatalf("%+v", err)
+		}
 		result := new(ResultEcho)
-		err = json.Unmarshal(msg, result)
+		err = json.Unmarshal(*msg.Result, result)
 		require.Nil(t, err)
 		got := result.Value
 		assert.Equal(t, got, val)
-	case err := <-cl.ErrorsCh:
-		t.Fatalf("%+v", err)
 	}
 }
 
@@ -362,7 +369,7 @@ func TestWSClientPingPong(t *testing.T) {
 	require.Nil(t, err)
 	defer cl.Stop()
 
-	time.Sleep(3 * time.Second)
+	time.Sleep(6 * time.Second)
 }
 
 func randBytes(t *testing.T) []byte {

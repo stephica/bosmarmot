@@ -1,32 +1,16 @@
-.PHONEY: all docs test install get_vendor_deps ensure_tools codegen wordlist
+.PHONEY: all test install get_vendor_deps ensure_tools codegen wordlist
 
 GOTOOLS = \
 	github.com/Masterminds/glide \
-	github.com/jteeuwen/go-bindata/go-bindata
+	github.com/jteeuwen/go-bindata/go-bindata \
+	github.com/alecthomas/gometalinter
+
 REPO:=github.com/tendermint/go-crypto
 
-docs:
-	@go get github.com/davecheney/godoc2md
-	godoc2md $(REPO) > README.md
+all: get_vendor_deps metalinter_test test
 
-all: get_vendor_deps install test
-
-install:
-	go install ./cmd/keys
-
-test: test_unit test_cli
-
-test_unit:
-	go test `glide novendor`
-	#go run tests/tendermint/*.go
-
-test_cli: tests/shunit2
-	# sudo apt-get install jq
-	@./tests/keys.sh
-
-tests/shunit2:
-	wget "https://raw.githubusercontent.com/kward/shunit2/master/source/2.1/src/shunit2" \
-		-q -O tests/shunit2
+test:
+	go test -p 1 `glide novendor`
 
 get_vendor_deps: ensure_tools
 	@rm -rf vendor/
@@ -49,3 +33,37 @@ codegen:
 	@echo "--> regenerating all interface wrappers"
 	@gen
 	@echo "Done!"
+
+metalinter: ensure_tools
+	@gometalinter --install
+	gometalinter --vendor --deadline=600s --enable-all --disable=lll ./...
+
+metalinter_test: ensure_tools
+	@gometalinter --install
+	gometalinter --vendor --deadline=600s --disable-all  \
+		--enable=deadcode \
+		--enable=gas \
+		--enable=goconst \
+		--enable=gocyclo \
+		--enable=gosimple \
+	 	--enable=ineffassign \
+	   	--enable=interfacer \
+		--enable=maligned \
+		--enable=megacheck \
+	 	--enable=misspell \
+		--enable=safesql \
+		--enable=staticcheck \
+		--enable=structcheck \
+	   	--enable=unconvert \
+		--enable=unused \
+		--enable=vetshadow \
+		--enable=vet \
+		--enable=varcheck \
+		./...
+
+		#--enable=dupl \
+		#--enable=errcheck \
+		#--enable=goimports \
+		#--enable=golint \ <== comments on anything exported
+		#--enable=gotype \
+		#--enable=unparam \

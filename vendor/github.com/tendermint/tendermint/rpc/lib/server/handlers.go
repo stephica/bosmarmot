@@ -8,6 +8,7 @@ import (
 	"io/ioutil"
 	"net/http"
 	"reflect"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"time"
@@ -110,35 +111,40 @@ func makeJSONRPCHandler(funcMap map[string]*RPCFunc, logger log.Logger) http.Han
 		var request types.RPCRequest
 		err := json.Unmarshal(b, &request)
 		if err != nil {
-			WriteRPCResponseHTTPError(w, http.StatusBadRequest, types.NewRPCResponse("", nil, fmt.Sprintf("Error unmarshalling request: %v", err.Error())))
+			WriteRPCResponseHTTP(w, types.RPCParseError("", errors.Wrap(err, "Error unmarshalling request")))
+			return
+		}
+		// A Notification is a Request object without an "id" member.
+		// The Server MUST NOT reply to a Notification, including those that are within a batch request.
+		if request.ID == "" {
+			logger.Debug("HTTPJSONRPC received a notification, skipping... (please send a non-empty ID if you want to call a method)")
 			return
 		}
 		if len(r.URL.Path) > 1 {
-			WriteRPCResponseHTTPError(w, http.StatusNotFound, types.NewRPCResponse(request.ID, nil, fmt.Sprintf("Invalid JSONRPC endpoint %s", r.URL.Path)))
+			WriteRPCResponseHTTP(w, types.RPCInvalidRequestError(request.ID, errors.Errorf("Path %s is invalid", r.URL.Path)))
 			return
 		}
 		rpcFunc := funcMap[request.Method]
-		if rpcFunc == nil {
-			WriteRPCResponseHTTPError(w, http.StatusNotFound, types.NewRPCResponse(request.ID, nil, "RPC method unknown: "+request.Method))
+		if rpcFunc == nil || rpcFunc.ws {
+			WriteRPCResponseHTTP(w, types.RPCMethodNotFoundError(request.ID))
 			return
 		}
-		if rpcFunc.ws {
-			WriteRPCResponseHTTPError(w, http.StatusMethodNotAllowed, types.NewRPCResponse(request.ID, nil, "RPC method is only for websockets: "+request.Method))
-			return
-		}
-		args, err := jsonParamsToArgsRPC(rpcFunc, request.Params)
-		if err != nil {
-			WriteRPCResponseHTTPError(w, http.StatusBadRequest, types.NewRPCResponse(request.ID, nil, fmt.Sprintf("Error converting json params to arguments: %v", err.Error())))
-			return
+		var args []reflect.Value
+		if len(request.Params) > 0 {
+			args, err = jsonParamsToArgsRPC(rpcFunc, request.Params)
+			if err != nil {
+				WriteRPCResponseHTTP(w, types.RPCInvalidParamsError(request.ID, errors.Wrap(err, "Error converting json params to arguments")))
+				return
+			}
 		}
 		returns := rpcFunc.f.Call(args)
 		logger.Info("HTTPJSONRPC", "method", request.Method, "args", args, "returns", returns)
 		result, err := unreflectResult(returns)
 		if err != nil {
-			WriteRPCResponseHTTPError(w, http.StatusInternalServerError, types.NewRPCResponse(request.ID, result, err.Error()))
+			WriteRPCResponseHTTP(w, types.RPCInternalError(request.ID, err))
 			return
 		}
-		WriteRPCResponseHTTP(w, types.NewRPCResponse(request.ID, result, ""))
+		WriteRPCResponseHTTP(w, types.NewRPCSuccessResponse(request.ID, result))
 	}
 }
 
@@ -207,13 +213,13 @@ func jsonParamsToArgs(rpcFunc *RPCFunc, raw []byte, argsOffset int) ([]reflect.V
 }
 
 // Convert a []interface{} OR a map[string]interface{} to properly typed values
-func jsonParamsToArgsRPC(rpcFunc *RPCFunc, params *json.RawMessage) ([]reflect.Value, error) {
-	return jsonParamsToArgs(rpcFunc, *params, 0)
+func jsonParamsToArgsRPC(rpcFunc *RPCFunc, params json.RawMessage) ([]reflect.Value, error) {
+	return jsonParamsToArgs(rpcFunc, params, 0)
 }
 
 // Same as above, but with the first param the websocket connection
-func jsonParamsToArgsWS(rpcFunc *RPCFunc, params *json.RawMessage, wsCtx types.WSRPCContext) ([]reflect.Value, error) {
-	values, err := jsonParamsToArgs(rpcFunc, *params, 1)
+func jsonParamsToArgsWS(rpcFunc *RPCFunc, params json.RawMessage, wsCtx types.WSRPCContext) ([]reflect.Value, error) {
+	values, err := jsonParamsToArgs(rpcFunc, params, 1)
 	if err != nil {
 		return nil, err
 	}
@@ -229,7 +235,7 @@ func makeHTTPHandler(rpcFunc *RPCFunc, logger log.Logger) func(http.ResponseWrit
 	// Exception for websocket endpoints
 	if rpcFunc.ws {
 		return func(w http.ResponseWriter, r *http.Request) {
-			WriteRPCResponseHTTPError(w, http.StatusMethodNotAllowed, types.NewRPCResponse("", nil, "This RPC method is only for websockets"))
+			WriteRPCResponseHTTP(w, types.RPCMethodNotFoundError(""))
 		}
 	}
 	// All other endpoints
@@ -237,17 +243,17 @@ func makeHTTPHandler(rpcFunc *RPCFunc, logger log.Logger) func(http.ResponseWrit
 		logger.Debug("HTTP HANDLER", "req", r)
 		args, err := httpParamsToArgs(rpcFunc, r)
 		if err != nil {
-			WriteRPCResponseHTTPError(w, http.StatusBadRequest, types.NewRPCResponse("", nil, fmt.Sprintf("Error converting http params to args: %v", err.Error())))
+			WriteRPCResponseHTTP(w, types.RPCInvalidParamsError("", errors.Wrap(err, "Error converting http params to arguments")))
 			return
 		}
 		returns := rpcFunc.f.Call(args)
 		logger.Info("HTTPRestRPC", "method", r.URL.Path, "args", args, "returns", returns)
 		result, err := unreflectResult(returns)
 		if err != nil {
-			WriteRPCResponseHTTPError(w, http.StatusInternalServerError, types.NewRPCResponse("", nil, err.Error()))
+			WriteRPCResponseHTTP(w, types.RPCInternalError("", err))
 			return
 		}
-		WriteRPCResponseHTTP(w, types.NewRPCResponse("", result, ""))
+		WriteRPCResponseHTTP(w, types.NewRPCSuccessResponse("", result))
 	}
 }
 
@@ -484,8 +490,22 @@ func (wsc *wsConnection) TryWriteRPCResponse(resp types.RPCResponse) bool {
 // Read from the socket and subscribe to or unsubscribe from events
 func (wsc *wsConnection) readRoutine() {
 	defer func() {
-		wsc.baseConn.Close()
+		if r := recover(); r != nil {
+			err, ok := r.(error)
+			if !ok {
+				err = fmt.Errorf("WSJSONRPC: %v", r)
+			}
+			wsc.Logger.Error("Panic in WSJSONRPC handler", "err", err, "stack", string(debug.Stack()))
+			wsc.WriteRPCResponse(types.RPCInternalError("unknown", err))
+			go wsc.readRoutine()
+		} else {
+			wsc.baseConn.Close()
+		}
 	}()
+
+	wsc.baseConn.SetPongHandler(func(m string) error {
+		return wsc.baseConn.SetReadDeadline(time.Now().Add(wsc.readWait))
+	})
 
 	for {
 		select {
@@ -509,8 +529,14 @@ func (wsc *wsConnection) readRoutine() {
 			var request types.RPCRequest
 			err = json.Unmarshal(in, &request)
 			if err != nil {
-				errStr := fmt.Sprintf("Error unmarshaling data: %s", err.Error())
-				wsc.WriteRPCResponse(types.NewRPCResponse(request.ID, nil, errStr))
+				wsc.WriteRPCResponse(types.RPCParseError("", errors.Wrap(err, "Error unmarshaling request")))
+				continue
+			}
+
+			// A Notification is a Request object without an "id" member.
+			// The Server MUST NOT reply to a Notification, including those that are within a batch request.
+			if request.ID == "" {
+				wsc.Logger.Debug("WSJSONRPC received a notification, skipping... (please send a non-empty ID if you want to call a method)")
 				continue
 			}
 
@@ -518,18 +544,22 @@ func (wsc *wsConnection) readRoutine() {
 
 			rpcFunc := wsc.funcMap[request.Method]
 			if rpcFunc == nil {
-				wsc.WriteRPCResponse(types.NewRPCResponse(request.ID, nil, "RPC method unknown: "+request.Method))
+				wsc.WriteRPCResponse(types.RPCMethodNotFoundError(request.ID))
 				continue
 			}
 			var args []reflect.Value
 			if rpcFunc.ws {
 				wsCtx := types.WSRPCContext{Request: request, WSRPCConnection: wsc}
-				args, err = jsonParamsToArgsWS(rpcFunc, request.Params, wsCtx)
+				if len(request.Params) > 0 {
+					args, err = jsonParamsToArgsWS(rpcFunc, request.Params, wsCtx)
+				}
 			} else {
-				args, err = jsonParamsToArgsRPC(rpcFunc, request.Params)
+				if len(request.Params) > 0 {
+					args, err = jsonParamsToArgsRPC(rpcFunc, request.Params)
+				}
 			}
 			if err != nil {
-				wsc.WriteRPCResponse(types.NewRPCResponse(request.ID, nil, err.Error()))
+				wsc.WriteRPCResponse(types.RPCInternalError(request.ID, errors.Wrap(err, "Error converting json params to arguments")))
 				continue
 			}
 			returns := rpcFunc.f.Call(args)
@@ -539,10 +569,10 @@ func (wsc *wsConnection) readRoutine() {
 
 			result, err := unreflectResult(returns)
 			if err != nil {
-				wsc.WriteRPCResponse(types.NewRPCResponse(request.ID, nil, err.Error()))
+				wsc.WriteRPCResponse(types.RPCInternalError(request.ID, err))
 				continue
 			} else {
-				wsc.WriteRPCResponse(types.NewRPCResponse(request.ID, result, ""))
+				wsc.WriteRPCResponse(types.NewRPCSuccessResponse(request.ID, result))
 				continue
 			}
 

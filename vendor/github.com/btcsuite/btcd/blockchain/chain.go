@@ -497,10 +497,14 @@ func LockTimeToSequence(isSeconds bool, locktime uint32) uint32 {
 //
 // This function MUST be called with the chain state lock held (for reads).
 func (b *BlockChain) getReorganizeNodes(node *blockNode) (*list.List, *list.List) {
-	// Nothing to detach or attach if there is no node.
 	attachNodes := list.New()
 	detachNodes := list.New()
-	if node == nil {
+
+	// Do not reorganize to a known invalid chain. Ancestors deeper than the
+	// direct parent are checked below but this is a quick check before doing
+	// more unnecessary work.
+	if b.index.NodeStatus(node.parent).KnownInvalid() {
+		b.index.SetStatusFlags(node, statusInvalidAncestor)
 		return detachNodes, attachNodes
 	}
 
@@ -509,8 +513,25 @@ func (b *BlockChain) getReorganizeNodes(node *blockNode) (*list.List, *list.List
 	// so they are attached in the appropriate order when iterating the list
 	// later.
 	forkNode := b.bestChain.FindFork(node)
+	invalidChain := false
 	for n := node; n != nil && n != forkNode; n = n.parent {
+		if b.index.NodeStatus(n).KnownInvalid() {
+			invalidChain = true
+			break
+		}
 		attachNodes.PushFront(n)
+	}
+
+	// If any of the node's ancestors are invalid, unwind attachNodes, marking
+	// each one as invalid for future reference.
+	if invalidChain {
+		var next *list.Element
+		for e := attachNodes.Front(); e != nil; e = next {
+			next = e.Next()
+			n := attachNodes.Remove(e).(*blockNode)
+			b.index.SetStatusFlags(n, statusInvalidAncestor)
+		}
+		return detachNodes, attachNodes
 	}
 
 	// Start from the end of the main chain and work backwards until the
@@ -785,12 +806,8 @@ func countSpentOutputs(block *btcutil.Block) int {
 // the chain) and nodes the are being attached must be in forwards order
 // (think pushing them onto the end of the chain).
 //
-// The flags modify the behavior of this function as follows:
-//  - BFDryRun: Only the checks which ensure the reorganize can be completed
-//    successfully are performed.  The chain is not reorganized.
-//
 // This function MUST be called with the chain state lock held (for writes).
-func (b *BlockChain) reorganizeChain(detachNodes, attachNodes *list.List, flags BehaviorFlags) error {
+func (b *BlockChain) reorganizeChain(detachNodes, attachNodes *list.List) error {
 	// All of the blocks to detach and related spend journal entries needed
 	// to unspend transaction outputs in the blocks being disconnected must
 	// be loaded from the database during the reorg check phase below and
@@ -858,8 +875,17 @@ func (b *BlockChain) reorganizeChain(detachNodes, attachNodes *list.List, flags 
 	// at least a couple of ways accomplish that rollback, but both involve
 	// tweaking the chain and/or database.  This approach catches these
 	// issues before ever modifying the chain.
+	var validationError error
 	for e := attachNodes.Front(); e != nil; e = e.Next() {
 		n := e.Value.(*blockNode)
+
+		// If any previous nodes in attachNodes failed validation,
+		// mark this one as having an invalid ancestor.
+		if validationError != nil {
+			b.index.SetStatusFlags(n, statusInvalidAncestor)
+			continue
+		}
+
 		var block *btcutil.Block
 		err := b.db.View(func(dbTx database.Tx) error {
 			var err error
@@ -873,20 +899,42 @@ func (b *BlockChain) reorganizeChain(detachNodes, attachNodes *list.List, flags 
 		// Store the loaded block for later.
 		attachBlocks = append(attachBlocks, block)
 
+		// Skip checks if node has already been fully validated. Although
+		// checkConnectBlock gets skipped, we still need to update the UTXO
+		// view.
+		if b.index.NodeStatus(n).KnownValid() {
+			err = view.fetchInputUtxos(b.db, block)
+			if err != nil {
+				return err
+			}
+			err = view.connectTransactions(block, nil)
+			if err != nil {
+				return err
+			}
+			continue
+		}
+
 		// Notice the spent txout details are not requested here and
 		// thus will not be generated.  This is done because the state
 		// is not being immediately written to the database, so it is
 		// not needed.
 		err = b.checkConnectBlock(n, block, view, nil)
 		if err != nil {
+			// If the block failed validation mark it as invalid, then
+			// continue to loop through remaining nodes, marking them as
+			// having an invalid ancestor.
+			if _, ok := err.(RuleError); ok {
+				b.index.SetStatusFlags(n, statusValidateFailed)
+				validationError = err
+				continue
+			}
 			return err
 		}
+		b.index.SetStatusFlags(n, statusValid)
 	}
 
-	// Skip disconnecting and connecting the blocks when running with the
-	// dry run flag set.
-	if flags&BFDryRun == BFDryRun {
-		return nil
+	if validationError != nil {
+		return validationError
 	}
 
 	// Reset the view for the actual connection code below.  This is
@@ -976,18 +1024,18 @@ func (b *BlockChain) reorganizeChain(detachNodes, attachNodes *list.List, flags 
 // The flags modify the behavior of this function as follows:
 //  - BFFastAdd: Avoids several expensive transaction validation operations.
 //    This is useful when using checkpoints.
-//  - BFDryRun: Prevents the block from actually being connected and avoids any
-//    log messages related to modifying the state.
 //
 // This function MUST be called with the chain state lock held (for writes).
 func (b *BlockChain) connectBestChain(node *blockNode, block *btcutil.Block, flags BehaviorFlags) (bool, error) {
 	fastAdd := flags&BFFastAdd == BFFastAdd
-	dryRun := flags&BFDryRun == BFDryRun
 
 	// We are extending the main (best) chain with a new block.  This is the
 	// most common case.
 	parentHash := &block.MsgBlock().Header.PrevBlock
 	if parentHash.IsEqual(&b.bestChain.Tip().hash) {
+		// Skip checks if node has already been fully validated.
+		fastAdd = fastAdd || b.index.NodeStatus(node).KnownValid()
+
 		// Perform several checks to verify the block can be connected
 		// to the main chain without violating any rules and without
 		// actually connecting the block.
@@ -997,13 +1045,12 @@ func (b *BlockChain) connectBestChain(node *blockNode, block *btcutil.Block, fla
 		if !fastAdd {
 			err := b.checkConnectBlock(node, block, view, &stxos)
 			if err != nil {
+				if _, ok := err.(RuleError); ok {
+					b.index.SetStatusFlags(node, statusValidateFailed)
+				}
 				return false, err
 			}
-		}
-
-		// Don't connect the block if performing a dry run.
-		if dryRun {
-			return true, nil
+			b.index.SetStatusFlags(node, statusValid)
 		}
 
 		// In the fast add case the code to check the block connection
@@ -1037,11 +1084,6 @@ func (b *BlockChain) connectBestChain(node *blockNode, block *btcutil.Block, fla
 	// We're extending (or creating) a side chain, but the cumulative
 	// work for this new side chain is not enough to make it the new chain.
 	if node.workSum.Cmp(b.bestChain.Tip().workSum) <= 0 {
-		// Skip Logging info when the dry run flag is set.
-		if dryRun {
-			return false, nil
-		}
-
 		// Log information about how the block is forking the chain.
 		fork := b.bestChain.FindFork(node)
 		if fork.hash.IsEqual(parentHash) {
@@ -1067,11 +1109,8 @@ func (b *BlockChain) connectBestChain(node *blockNode, block *btcutil.Block, fla
 	detachNodes, attachNodes := b.getReorganizeNodes(node)
 
 	// Reorganize the chain.
-	if !dryRun {
-		log.Infof("REORGANIZE: Block %v is causing a reorganize.",
-			node.hash)
-	}
-	err := b.reorganizeChain(detachNodes, attachNodes, flags)
+	log.Infof("REORGANIZE: Block %v is causing a reorganize.", node.hash)
+	err := b.reorganizeChain(detachNodes, attachNodes)
 	if err != nil {
 		return false, err
 	}

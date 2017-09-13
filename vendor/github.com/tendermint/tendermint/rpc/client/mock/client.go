@@ -37,9 +37,7 @@ type Client struct {
 	types.EventSwitch
 }
 
-func (c Client) _assertIsClient() client.Client {
-	return c
-}
+var _ client.Client = Client{}
 
 // Call is used by recorders to save a call and response.
 // It can also be used to configure mock responses.
@@ -84,8 +82,12 @@ func (c Client) ABCIInfo() (*ctypes.ResultABCIInfo, error) {
 	return core.ABCIInfo()
 }
 
-func (c Client) ABCIQuery(path string, data data.Bytes, prove bool) (*ctypes.ResultABCIQuery, error) {
-	return core.ABCIQuery(path, data, prove)
+func (c Client) ABCIQuery(path string, data data.Bytes) (*ctypes.ResultABCIQuery, error) {
+	return c.ABCIQueryWithOptions(path, data, client.DefaultABCIQueryOptions)
+}
+
+func (c Client) ABCIQueryWithOptions(path string, data data.Bytes, opts client.ABCIQueryOptions) (*ctypes.ResultABCIQuery, error) {
+	return core.ABCIQuery(path, data, opts.Height, opts.Trusted)
 }
 
 func (c Client) BroadcastTxCommit(tx types.Tx) (*ctypes.ResultBroadcastTxCommit, error) {
@@ -116,14 +118,14 @@ func (c Client) Genesis() (*ctypes.ResultGenesis, error) {
 	return core.Genesis()
 }
 
-func (c Client) Block(height int) (*ctypes.ResultBlock, error) {
+func (c Client) Block(height *int) (*ctypes.ResultBlock, error) {
 	return core.Block(height)
 }
 
-func (c Client) Commit(height int) (*ctypes.ResultCommit, error) {
+func (c Client) Commit(height *int) (*ctypes.ResultCommit, error) {
 	return core.Commit(height)
 }
 
-func (c Client) Validators() (*ctypes.ResultValidators, error) {
-	return core.Validators()
+func (c Client) Validators(height *int) (*ctypes.ResultValidators, error) {
+	return core.Validators(height)
 }

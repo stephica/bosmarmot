@@ -3,7 +3,7 @@ package main
 import (
 	"fmt"
 
-	"code.monax.io/platform/bosmarmot/release"
+	"github.com/monax/bosmarmot/release"
 )
 
 func main() {

@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.7.1 (November 14, 2017)
+
+IMPROVEMENTS:
+ - [cli] added version command
+
+BUG FIXES:
+ - [server] fix "Connection error module=abci-server error=EOF"
+
+## 0.7.0 (October 27, 2017)
+
+BREAKING CHANGES:
+ - [cli] consolidate example apps under a single `abci-cli` binary
+
+IMPROVEMENTS:
+ - [cli] use spf13/cobra instead of urfave/cli
+ - [dummy] use iavl instead of merkleeyes, and add support for historical queries
+
+BUG FIXES:
+ - [client] fix deadlock on StopForError
+
+## 0.6.0 (September 22, 2017)
+
+BREAKING CHANGES:
+
+- [types/client] app.BeginBlock takes RequestBeginBlock
+- [types/client] app.InitChain takes RequestInitChain
+- [types/client] app.Info takes RequestInfo
+
+IMPROVEMENTS:
+
+- various linting
+
 ## 0.5.0 (May 18, 2017)
 
 BREAKING CHANGES:
@@ -19,7 +51,7 @@ IMPROVEMENTS:
 - Update imports for new `tmlibs` repository
 - Use the new logger
 - [abci-cli] Add flags to the query command for `path`, `height`, and `prove`
-- [types] use `data.Bytes` and `json` tags in the `Result` struct 
+- [types] use `data.Bytes` and `json` tags in the `Result` struct
 
 BUG FIXES:
 
@@ -31,9 +63,9 @@ IMPROVEMENTS:
 
 ## 0.4.0 (March 6, 2017)
 
-BREAKING CHANGES: 
+BREAKING CHANGES:
 
-- Query takes RequestQuery and returns ResponseQuery. The request is split into `data` and `path`, 
+- Query takes RequestQuery and returns ResponseQuery. The request is split into `data` and `path`,
 can specify a height to query the state from, and whether or not the response should come with a proof.
 The response returns the corresponding key-value pair, with proof if requested.
 
@@ -42,7 +74,7 @@ message RequestQuery{
 	bytes data = 1;
 	string path = 2;
 	uint64 height = 3;
-	bool prove = 4; 
+	bool prove = 4;
 }
 
 message ResponseQuery{
@@ -118,7 +150,7 @@ message Header {
 	bytes last_commit_hash = 6;
 	bytes data_hash = 7;
 	bytes validators_hash = 8;
-	bytes app_hash = 9; 
+	bytes app_hash = 9;
 }
 
 message BlockID {

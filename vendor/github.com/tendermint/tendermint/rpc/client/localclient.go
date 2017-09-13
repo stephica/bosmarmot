@@ -41,13 +41,10 @@ func NewLocal(node *nm.Node) Local {
 	}
 }
 
-func (c Local) _assertIsClient() Client {
-	return c
-}
-
-func (c Local) _assertIsNetworkClient() NetworkClient {
-	return c
-}
+var (
+	_ Client        = Local{}
+	_ NetworkClient = Local{}
+)
 
 func (c Local) Status() (*ctypes.ResultStatus, error) {
 	return core.Status()
@@ -57,8 +54,12 @@ func (c Local) ABCIInfo() (*ctypes.ResultABCIInfo, error) {
 	return core.ABCIInfo()
 }
 
-func (c Local) ABCIQuery(path string, data data.Bytes, prove bool) (*ctypes.ResultABCIQuery, error) {
-	return core.ABCIQuery(path, data, prove)
+func (c Local) ABCIQuery(path string, data data.Bytes) (*ctypes.ResultABCIQuery, error) {
+	return c.ABCIQueryWithOptions(path, data, DefaultABCIQueryOptions)
+}
+
+func (c Local) ABCIQueryWithOptions(path string, data data.Bytes, opts ABCIQueryOptions) (*ctypes.ResultABCIQuery, error) {
+	return core.ABCIQuery(path, data, opts.Height, opts.Trusted)
 }
 
 func (c Local) BroadcastTxCommit(tx types.Tx) (*ctypes.ResultBroadcastTxCommit, error) {
@@ -93,16 +94,16 @@ func (c Local) Genesis() (*ctypes.ResultGenesis, error) {
 	return core.Genesis()
 }
 
-func (c Local) Block(height int) (*ctypes.ResultBlock, error) {
+func (c Local) Block(height *int) (*ctypes.ResultBlock, error) {
 	return core.Block(height)
 }
 
-func (c Local) Commit(height int) (*ctypes.ResultCommit, error) {
+func (c Local) Commit(height *int) (*ctypes.ResultCommit, error) {
 	return core.Commit(height)
 }
 
-func (c Local) Validators() (*ctypes.ResultValidators, error) {
-	return core.Validators()
+func (c Local) Validators(height *int) (*ctypes.ResultValidators, error) {
+	return core.Validators(height)
 }
 
 func (c Local) Tx(hash []byte, prove bool) (*ctypes.ResultTx, error) {

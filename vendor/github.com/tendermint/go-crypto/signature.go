@@ -23,7 +23,6 @@ type SignatureInner interface {
 	AssertIsSignatureInner()
 	Bytes() []byte
 	IsZero() bool
-	String() string
 	Equals(Signature) bool
 	Wrap() Signature
 }
@@ -62,6 +61,12 @@ func (sig *SignatureEd25519) UnmarshalJSON(enc []byte) error {
 	err := data.Encoder.Unmarshal(&ref, enc)
 	copy(sig[:], ref)
 	return err
+}
+
+func SignatureEd25519FromBytes(data []byte) Signature {
+	var sig SignatureEd25519
+	copy(sig[:], data)
+	return sig.Wrap()
 }
 
 //-------------------------------------

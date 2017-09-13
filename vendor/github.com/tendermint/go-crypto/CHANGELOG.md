@@ -1,5 +1,46 @@
 # Changelog
 
+## 0.4.1 (October 27, 2017)
+
+This release removes support for bcrypt as it was merged too soon without an upgrade plan
+for existing keys.
+
+REVERTS THE FOLLOWING COMMITS:
+
+- Parameterize and lower bcrypt cost - dfc4cdd2d71513e4a9922d679c74f36357c4c862
+- Upgrade keys to use bcrypt with salts (#38)  - 8e7f0e7701f92206679ad093d013b9b162427631
+
+## 0.4.0 (October 27, 2017)
+
+BREAKING CHANGES:
+
+- `keys`: use bcrypt plus salt
+
+FEATURES:
+
+- add support for signing via Ledger Nano
+
+IMPROVEMENTS:
+
+- linting and comments
+
+## 0.3.0 (September 22, 2017)
+
+BREAKING CHANGES:
+
+- Remove `cmd` and `keys/tx` packages altogether: move it to the cosmos-sdk
+- `cryptostore.Generator` takes a secret 
+- Remove `String()` from `Signature` interface
+
+FEATURES:
+
+- `keys`: add CRC16 error correcting code
+
+IMPROVEMENTS:
+
+- Allow no passwords on keys for development convenience
+
+
 ## 0.2.1 (June 21, 2017)
 
 - Improve keys command

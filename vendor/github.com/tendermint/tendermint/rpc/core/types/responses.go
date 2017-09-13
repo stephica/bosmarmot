@@ -4,9 +4,9 @@ import (
 	"strings"
 
 	abci "github.com/tendermint/abci/types"
-	"github.com/tendermint/go-crypto"
+	crypto "github.com/tendermint/go-crypto"
 	"github.com/tendermint/go-wire/data"
-
+	cstypes "github.com/tendermint/tendermint/consensus/types"
 	"github.com/tendermint/tendermint/p2p"
 	"github.com/tendermint/tendermint/types"
 )
@@ -26,9 +26,24 @@ type ResultBlock struct {
 }
 
 type ResultCommit struct {
-	Header          *types.Header `json:"header"`
-	Commit          *types.Commit `json:"commit"`
-	CanonicalCommit bool          `json:"canonical"`
+	// SignedHeader is header and commit, embedded so we only have
+	// one level in the json output
+	types.SignedHeader
+	CanonicalCommit bool `json:"canonical"`
+}
+
+// NewResultCommit is a helper to initialize the ResultCommit with
+// the embedded struct
+func NewResultCommit(header *types.Header, commit *types.Commit,
+	canonical bool) *ResultCommit {
+
+	return &ResultCommit{
+		SignedHeader: types.SignedHeader{
+			Header: header,
+			Commit: commit,
+		},
+		CanonicalCommit: canonical,
+	}
 }
 
 type ResultStatus struct {
@@ -76,8 +91,8 @@ type ResultValidators struct {
 }
 
 type ResultDumpConsensusState struct {
-	RoundState      string   `json:"round_state"`
-	PeerRoundStates []string `json:"peer_round_states"`
+	RoundState      *cstypes.RoundState                `json:"round_state"`
+	PeerRoundStates map[string]*cstypes.PeerRoundState `json:"peer_round_states"`
 }
 
 type ResultBroadcastTx struct {

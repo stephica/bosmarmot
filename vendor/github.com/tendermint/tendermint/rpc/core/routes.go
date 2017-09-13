@@ -18,7 +18,7 @@ var Routes = map[string]*rpc.RPCFunc{
 	"block":                rpc.NewRPCFunc(Block, "height"),
 	"commit":               rpc.NewRPCFunc(Commit, "height"),
 	"tx":                   rpc.NewRPCFunc(Tx, "hash,prove"),
-	"validators":           rpc.NewRPCFunc(Validators, ""),
+	"validators":           rpc.NewRPCFunc(Validators, "height"),
 	"dump_consensus_state": rpc.NewRPCFunc(DumpConsensusState, ""),
 	"unconfirmed_txs":      rpc.NewRPCFunc(UnconfirmedTxs, ""),
 	"num_unconfirmed_txs":  rpc.NewRPCFunc(NumUnconfirmedTxs, ""),
@@ -29,7 +29,7 @@ var Routes = map[string]*rpc.RPCFunc{
 	"broadcast_tx_async":  rpc.NewRPCFunc(BroadcastTxAsync, "tx"),
 
 	// abci API
-	"abci_query": rpc.NewRPCFunc(ABCIQuery, "path,data,prove"),
+	"abci_query": rpc.NewRPCFunc(ABCIQuery, "path,data,height,prove"),
 	"abci_info":  rpc.NewRPCFunc(ABCIInfo, ""),
 }
 
